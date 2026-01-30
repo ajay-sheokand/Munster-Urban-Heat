@@ -6,7 +6,7 @@ from streamlit_autorefresh import st_autorefresh
 
 
 import ee 
-import geemap.foliumap as geemap
+import geemap
 
 st_autorefresh(interval=60000)
 
