@@ -1,0 +1,8 @@
+streamlit
+requests
+folium
+streamlit-folium
+streamlit-autorefresh
+earthengine-api
+geemap
+google-auth
