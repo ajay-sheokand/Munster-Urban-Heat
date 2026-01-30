@@ -2,7 +2,7 @@ import streamlit as st
 import requests
 import folium
 from streamlit_folium import st_folium
-from strealit_autorefresh import st_autorefresh
+from streamlit_autorefresh import st_autorefresh
 
 
 import ee 
