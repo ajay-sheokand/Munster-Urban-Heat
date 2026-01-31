@@ -63,6 +63,14 @@ def add_ee_layer(self, ee_image_object, vis_params, name):
         control=True
     ).add_to(self)
 
+folium.Map.add_ee_layer = add_ee_layer
+
+# Add MODIS LST layer
+vis_params = {
+    "min": 25,
+    "max": 50,
+    "palette": ["blue", "green", "yellow", "orange", "red"],
+}
 lst = (
     ee.ImageCollection("MODIS/061/MOD11A1")  # Updated collection
     .filterDate("2024-05-01", "2024-05-02")
@@ -76,7 +84,6 @@ else:
     lst_celsius = lst.multiply(0.02).subtract(273.15)
     m.add_ee_layer(lst_celsius.clip(region), vis_params, "MODIS LST (°C)")
 
-    
 # Locations for weather monitoring
 locations = [
     ("Delhi", 28.6139, 77.2090),
