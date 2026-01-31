@@ -53,7 +53,7 @@ lst = (
 lst_celsius = lst.multiply(0.02).subtract(273.15)
 
 # Create folium map
-Map = geemap.Map(center=[28.6139, 77.209], zoom=8)
+Map = geemap.Map(center=[28.6139, 77.209], zoom=8, ee_initialize=False)
 
 # Add MODIS layer
 Map.addLayer(
