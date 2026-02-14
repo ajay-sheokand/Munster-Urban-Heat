@@ -1,3 +1,4 @@
+from enum import auto
 import streamlit as st
 import requests
 import folium
@@ -41,8 +42,8 @@ st.subheader("MODIS Satellite-Derived Daily Land Surface Temperature (LST)")
 
 # Fetch MODIS LST
 lst = (
-    ee.ImageCollection("MODIS/006/MOD11A1")
-    .filterDate("2024-05-01", "2024-05-02")
+    ee.ImageCollection("MODIS/061/MOD11A1")
+    .filterDate("2025-12-31", "2026-01-30")
     .select("LST_Day_1km")
     .mean()
 )
@@ -53,14 +54,15 @@ lst_celsius = lst.multiply(0.02).subtract(273.15)
 m = folium.Map(location=[28.6139, 77.209], zoom_start=8)
 
 # Function to add Earth Engine layer to Folium
-def add_ee_layer(self, ee_image_object, vis_params, name):
+def add_ee_layer(self, ee_image_object, vis_params, name, opacity=1.0):
     map_id_dict = ee.Image(ee_image_object).getMapId(vis_params)
     folium.raster_layers.TileLayer(
         tiles=map_id_dict['tile_fetcher'].url_format,
         attr='Google Earth Engine',
         name=name,
         overlay=True,
-        control=True
+        control=True,
+        opacity= opacity,
     ).add_to(self)
 
 folium.Map.add_ee_layer = add_ee_layer
@@ -71,18 +73,23 @@ vis_params = {
     "max": 50,
     "palette": ["blue", "green", "yellow", "orange", "red"],
 }
+
 lst = (
     ee.ImageCollection("MODIS/061/MOD11A1")  # Updated collection
-    .filterDate("2024-05-01", "2024-05-02")
+    .filterDate("2025-12-31", "2026-01-30")
     .select("LST_Day_1km")
     .mean()
 )
+
 
 if lst.bandNames().size().getInfo() == 0:
     st.error("No MODIS images found for the selected date!")
 else:
     lst_celsius = lst.multiply(0.02).subtract(273.15)
-    m.add_ee_layer(lst_celsius.clip(region), vis_params, "MODIS LST (°C)")
+    lst_smooth = (
+        lst_celsius.resample("bilinear").reproject(crs="EPSG:4326", scale=250)
+    )
+    m.add_ee_layer(lst_smooth.clip(region), vis_params, "MODIS LST Smooth Heat Map(°C)", opacity=0.5)
 
 # Locations for weather monitoring
 locations = [
@@ -130,7 +137,7 @@ Status: {alert}
     ).add_to(m)
 
 # Render map in Streamlit
-st_folium(m, width=800, height=500)
+st_folium(m, width=2000, height=600)
 
 # Live heat alerts
 st.subheader("Live Heat Alerts for Delhi-NCR Region")
