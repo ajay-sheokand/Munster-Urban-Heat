@@ -8,3 +8,5 @@ earthengine-api>=0.1.326
 xyzservices==2023.7.0
 google-auth
 setuptools>=70.0.0
+geopandas
+shapely

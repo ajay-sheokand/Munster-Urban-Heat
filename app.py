@@ -7,12 +7,14 @@ from streamlit_autorefresh import st_autorefresh
 import pandas as pd
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
+import json
+import os
 
 import ee
 from google.oauth2 import service_account
 
 st.set_page_config(layout="wide")
-st_autorefresh(interval=60000)
+st_autorefresh(interval=300000)
 
 st.title("Delhi-NCR Urban Heat Monitoring Dashboard")
 st.markdown("""
@@ -39,71 +41,344 @@ credentials = service_account.Credentials.from_service_account_info(
 
 ee.Initialize(credentials)
 
-# Define Delhi-NCR region
-#region = ee.Geometry.Rectangle([76.84, 27.39, 78.57, 28.88])
-region = ee.Geometry.Rectangle([76.84, 27.39, 78.57, 28.88])
+# Create a merged geometry from all NCR districts for accurate clipping
+@st.cache_data
+def create_delhi_region_geometry():
+    """Create merged geometry from all 11 Delhi districts only"""
+    try:
+        geoboundaries_path = "geoBoundaries-IND-ADM2-all/geoBoundaries-IND-ADM2_simplified.geojson"
+        
+        if not os.path.exists(geoboundaries_path):
+            # Fallback to Delhi rectangle if file not found
+            return ee.Geometry.Rectangle([76.84, 27.39, 78.57, 28.88])
+        
+        with open(geoboundaries_path, 'r', encoding='utf-8') as f:
+            districts_data = json.load(f)
+        
+        # Filter to only Delhi districts (11 districts)
+        delhi_districts = [
+            'Central Delhi', 'East Delhi', 'New Delhi', 'North Delhi', 'North East Delhi', 
+            'North West Delhi', 'Shahdara', 'South Delhi', 'South East Delhi', 'South West Delhi', 'West Delhi'
+        ]
+        
+        # Extract and merge all Delhi district geometries
+        merged_geometry = None
+        for feature in districts_data.get('features', []):
+            district_name = feature.get('properties', {}).get('shapeName', '')
+            if district_name in delhi_districts:
+                geom = ee.Geometry(feature['geometry'])
+                if merged_geometry is None:
+                    merged_geometry = geom
+                else:
+                    merged_geometry = merged_geometry.union(geom)
+        
+        if merged_geometry is not None:
+            return merged_geometry
+        else:
+            # Fallback to Delhi rectangle if no districts found
+            return ee.Geometry.Rectangle([76.84, 27.39, 78.57, 28.88])
+    except Exception as e:
+        # Fallback to Delhi rectangle if any error occurs
+        return ee.Geometry.Rectangle([76.84, 27.39, 78.57, 28.88])
 
+# Define region for Delhi only
+region = create_delhi_region_geometry()
+
+# Cache geoBoundaries data for efficient loading
+@st.cache_data
+def load_geoboundaries():
+    """Load and filter geoBoundaries for Delhi-NCR states"""
+    try:
+        # Use simplified version for better performance
+        geoboundaries_path = "geoBoundaries-IND-ADM1-all/geoBoundaries-IND-ADM1_simplified.geojson"
+        
+        if not os.path.exists(geoboundaries_path):
+            return None
+        
+        with open(geoboundaries_path, 'r', encoding='utf-8') as f:
+            geoboundaries_data = json.load(f)
+        
+        # Filter to only Delhi + NCR states
+        ncr_states = ['Delhi', 'Haryana', 'Uttar Pradesh', 'Rajasthan']
+        filtered_features = [
+            feature for feature in geoboundaries_data.get('features', [])
+            if feature.get('properties', {}).get('shapeName', '') in ncr_states
+        ]
+        
+        if filtered_features:
+            return {
+                'type': 'FeatureCollection',
+                'features': filtered_features
+            }
+        return None
+    except Exception as e:
+        return None
+
+# Cache district boundaries for efficient loading
+@st.cache_data
+def load_district_boundaries():
+    """Load and filter district boundaries for NCR region"""
+    try:
+        geoboundaries_path = "geoBoundaries-IND-ADM2-all/geoBoundaries-IND-ADM2_simplified.geojson"
+        
+        if not os.path.exists(geoboundaries_path):
+            return None
+        
+        with open(geoboundaries_path, 'r', encoding='utf-8') as f:
+            districts_data = json.load(f)
+        
+        # Filter to only NCR districts - Official 35 Districts
+        ncr_districts = [
+            # Delhi (11 districts)
+            'Central Delhi', 'East Delhi', 'New Delhi', 'North Delhi', 'North East Delhi', 
+            'North West Delhi', 'Shahdara', 'South Delhi', 'South East Delhi', 'South West Delhi', 'West Delhi',
+            # Haryana (14 districts)
+            'Faridabad', 'Gurugram', 'Gurgaon', 'Nuh', 'Mewat', 'Rohtak', 'Sonipat', 'Rewari', 
+            'Jhajjar', 'Panipat', 'Palwal', 'Bhiwani', 'Charkhi Dadri', 'Mahendragarh', 'Jind', 'Karnal',
+            # Uttar Pradesh (8 districts)
+            'Meerut', 'Ghaziabad', 'Gautam Budh Nagar', 'Bulandshahr', 'Baghpat', 'Hapur', 'Shamli', 'Muzaffarnagar',
+            # Rajasthan (2 districts)
+            'Alwar', 'Bharatpur'
+        ]
+        
+        filtered_features = [
+            feature for feature in districts_data.get('features', [])
+            if feature.get('properties', {}).get('shapeName', '') in ncr_districts
+        ]
+        
+        if filtered_features:
+            return {
+                'type': 'FeatureCollection',
+                'features': filtered_features
+            }
+        return None
+    except Exception as e:
+        return None
 
 st.subheader("MODIS Satellite-Derived Daily Land Surface Temperature (LST)")
 
-# Fetch MODIS LST
-lst = (
-    ee.ImageCollection("MODIS/061/MOD11A1")
-    .filterDate("2025-12-31", "2026-01-30")
-    .select("LST_Day_1km")
-    .mean()
-)
+# Function to create merged district geometry from shapefile
+@st.cache_data
+def get_districts_ee_geometry():
+    """Get merged EE geometry from shapefile districts"""
+    try:
+        import geopandas as gpd
+        shapefile_path = "archive/DISTRICT_BOUNDARY.shp"
+        
+        if not os.path.exists(shapefile_path):
+            return None
+        
+        gdf = gpd.read_file(shapefile_path)
+        gdf = gdf.to_crs(epsg=4326)
+        delhi_gdf = gdf[gdf['STATE'].str.contains('DELHI', case=False, na=False)]
+        
+        if delhi_gdf.empty:
+            return None
+        
+        # Merge all district geometries
+        merged_geom = delhi_gdf.unary_union
+        
+        # Convert to Earth Engine geometry
+        coords = list(merged_geom.exterior.coords)
+        ee_geom = ee.Geometry.Polygon([coords])
+        
+        return ee_geom
+    except Exception as e:
+        return None
 
-lst_celsius = lst.multiply(0.02).subtract(273.15)
+# Get district geometry for clipping
+districts_geometry = get_districts_ee_geometry()
 
 # Create a plain Folium map
 m = folium.Map(location=[28.6139, 77.2090], zoom_start=10)
 
 # Function to add Earth Engine layer to Folium
 def add_ee_layer(self, ee_image_object, vis_params, name, opacity=1.0):
-    map_id_dict = ee.Image(ee_image_object).getMapId(vis_params)
-    folium.raster_layers.TileLayer(
-        tiles=map_id_dict['tile_fetcher'].url_format,
-        attr='Google Earth Engine',
-        name=name,
-        overlay=True,
-        control=True,
-        opacity= opacity,
-    ).add_to(self)
+    try:
+        map_id_dict = ee.Image(ee_image_object).getMapId(vis_params)
+        folium.raster_layers.TileLayer(
+            tiles=map_id_dict['tile_fetcher'].url_format,
+            attr='Google Earth Engine',
+            name=name,
+            overlay=True,
+            control=True,
+            opacity=opacity,
+        ).add_to(self)
+    except Exception as e:
+        st.warning(f"Could not load layer {name}: {str(e)}")
 
 folium.Map.add_ee_layer = add_ee_layer
 
-# Add MODIS LST layer
+# Add MODIS LST layer with enhanced styling
 vis_params = {
-    "min": 25,
+    "min": -5,
     "max": 50,
-    "palette": ["blue", "green", "yellow", "orange", "red"],
+    "palette": [
+        "#0000ff",  # Deep Blue - Coldest
+        "#00ccff",  # Cyan - Very Cool
+        "#00ff00",  # Green - Cool
+        "#ffff00",  # Yellow - Warm
+        "#ff8800",  # Orange - Hot
+        "#ff0000",  # Red - Very Hot
+        "#8b0000",  # Dark Red - Hottest
+    ],
 }
 
-lst = (
-    ee.ImageCollection("MODIS/061/MOD11A1")  # Updated collection
-    .filterDate("2025-12-31", "2026-01-30")
-    .select("LST_Day_1km")
-    .mean()
-)
-
-
-if lst.bandNames().size().getInfo() == 0:
-    st.error("No MODIS images found for the selected date!")
-else:
-    lst_celsius = lst.multiply(0.02).subtract(273.15)
-    lst_smooth = (
-        lst_celsius.resample("bilinear").reproject(crs="EPSG:4326", scale=250)
+try:
+    # Fetch MODIS LST
+    lst = (
+        ee.ImageCollection("MODIS/061/MOD11A1")
+        .filterDate("2025-12-31", "2026-01-30")
+        .select("LST_Day_1km")
+        .mean()
     )
-    m.add_ee_layer(lst_smooth.clip(region), vis_params, "MODIS LST Smooth Heat Map(°C)", opacity=0.5)
+    
+    # Convert LST to Celsius
+    lst_celsius = lst.multiply(0.02).subtract(273.15)
+    
+    # Clip to district boundaries if available
+    if districts_geometry:
+        lst_clipped = lst_celsius.clip(districts_geometry)
+        m.add_ee_layer(lst_clipped, vis_params, "🌡️ Land Surface Temperature (°C)", opacity=0.6)
+    else:
+        m.add_ee_layer(lst_celsius, vis_params, "🌡️ Land Surface Temperature (°C)", opacity=0.6)
+    
+    # Add NDVI-LST Correlation Layer
+    try:
+        modis_ndvi = (
+            ee.ImageCollection("MODIS/061/MOD13A2")
+            .filterDate("2025-09-01", "2026-02-14")
+            .select("NDVI")
+            .mean()
+        )
+        ndvi = modis_ndvi.divide(10000)
+        
+        # Compute correlation using local neighborhood statistics
+        ndvi_mean = ndvi.reduceNeighborhood(ee.Reducer.mean(), ee.Kernel.square(3))
+        lst_mean = lst_celsius.reduceNeighborhood(ee.Reducer.mean(), ee.Kernel.square(3))
+        
+        ndvi_diff = ndvi.subtract(ndvi_mean)
+        lst_diff = lst_celsius.subtract(lst_mean)
+        
+        covariance = ndvi_diff.multiply(lst_diff).reduceNeighborhood(ee.Reducer.mean(), ee.Kernel.square(3))
+        ndvi_std = ndvi.reduceNeighborhood(ee.Reducer.stdDev(), ee.Kernel.square(3))
+        lst_std = lst_celsius.reduceNeighborhood(ee.Reducer.stdDev(), ee.Kernel.square(3))
+        
+        # Calculate Pearson correlation
+        correlation = covariance.divide(ndvi_std.multiply(lst_std))
+        
+        # Clip to Delhi region for all districts
+        if districts_geometry:
+            correlation_clipped = correlation.clip(districts_geometry)
+        else:
+            correlation_clipped = correlation.clip(region)
+        
+        # Visualization parameters for correlation with enhanced color palette
+        corr_vis_params = {
+            'min': -1,
+            'max': 1,
+            'palette': [
+                '#2c0735',  # Deep purple - Strong negative
+                '#5D1C97',  # Purple - Negative
+                '#1F77B4',  # Blue - Negative
+                '#17BECF',  # Cyan - Weak negative
+                '#E8E8E8',  # Light gray - Neutral
+                '#FFEB3B',  # Bright yellow - Weak positive
+                '#FF9800',  # Orange - Positive
+                '#E74C3C',  # Red - Strong positive
+                '#8B0000',  # Dark red - Very strong positive
+            ]
+        }
+        
+        m.add_ee_layer(correlation_clipped, corr_vis_params, "📊 NDVI-LST Correlation", opacity=0.5)
+        
+    except Exception as corr_error:
+        st.warning(f"Could not load correlation layer: {str(corr_error)}")
+except Exception as lst_error:
+    st.error(f"Error loading LST layer: {str(lst_error)}")
 
-# Locations for weather monitoring - Delhi-NCR cities
+# Add NDVI layer for greenery visualization with enhanced colors
+try:
+    # Use MODIS NDVI which is more reliable and always available
+    modis_ndvi = (
+        ee.ImageCollection("MODIS/061/MOD13A2")  # MODIS Vegetation Indices
+        .filterDate("2025-09-01", "2026-02-14")  # Larger date range
+        .select("NDVI")
+        .mean()
+    )
+    
+    # Scale NDVI values (MODIS returns values 0-10000, need to scale to -1 to 1)
+    ndvi = modis_ndvi.divide(10000)
+    
+    # NDVI false color visualization parameters
+    ndvi_vis_params = {
+        "min": -0.3,
+        "max": 1,
+        "palette": [
+            "#8B0000",  # Dark Red - No Vegetation/Water
+            "#DC143C",  # Crimson - Very Low Vegetation
+            "#FF4500",  # Orange-Red - Low Vegetation
+            "#FFD700",  # Gold - Sparse Vegetation
+            "#FFFF00",  # Yellow - Moderate Vegetation
+            "#7FFF00",  # Chartreuse - Good Vegetation
+            "#00FF00",  # Lime Green - Dense Vegetation
+            "#006400",  # Dark Forest Green - Very Dense Vegetation
+        ],
+    }
+    
+    # Clip to district boundaries if available
+    if districts_geometry:
+        ndvi_clipped = ndvi.clip(districts_geometry)
+        m.add_ee_layer(ndvi_clipped, ndvi_vis_params, "🌿 Vegetation Index - NDVI", opacity=0.45)
+    else:
+        m.add_ee_layer(ndvi, ndvi_vis_params, "🌿 Vegetation Index - NDVI", opacity=0.45)
+except Exception as ndvi_error:
+    try:
+        # Fallback to Sentinel-2 with very lenient filtering
+        sentinel_collection = (
+            ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
+            .filterDate("2025-01-01", "2026-02-14")
+            .filterBounds(districts_geometry if districts_geometry else region)
+            .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 50))  # Very lenient
+            .sort('CLOUDY_PIXEL_PERCENTAGE')
+            .first()
+        )
+        
+        ndvi_sent = sentinel_collection.normalizedDifference(['B8', 'B4'])
+        
+        ndvi_vis_params = {
+            "min": -0.3,
+            "max": 1,
+            "palette": [
+                "#8B4513", "#CD853F", "#FFD700", "#ADFF2F",
+                "#32CD32", "#00AA00", "#006400",
+            ],
+        }
+        
+        # Clip to district boundaries if available
+        if districts_geometry:
+            ndvi_sent_clipped = ndvi_sent.clip(districts_geometry)
+            m.add_ee_layer(ndvi_sent_clipped, ndvi_vis_params, "🌿 Vegetation Index - NDVI", opacity=0.45)
+        else:
+            m.add_ee_layer(ndvi_sent, ndvi_vis_params, "🌿 Vegetation Index - NDVI", opacity=0.45)
+    except Exception as fallback_e:
+        st.warning(f"Vegetation layer temporarily unavailable")
+
+
+
+# Locations for weather monitoring - All 11 Delhi districts
 locations = [
-    ("Delhi", 28.6139, 77.2090),
-    ("Gurgaon", 28.4595, 77.0266),
-    ("Noida", 28.5355, 77.3910),
-    ("Faridabad", 28.4089, 77.3178),
-    ("Ghaziabad", 28.6692, 77.4538),
+    ("Central", 28.6422, 77.2183),
+    ("East", 28.6261, 77.3006),
+    ("New Delhi", 28.6107, 77.2193),
+    ("North", 28.7043, 77.2074),
+    ("North East", 28.7234, 77.2701),
+    ("North West", 28.7717, 77.0986),
+    ("Shahadra", 28.7100, 77.3150),
+    ("South", 28.5032, 77.2332),
+    ("South East", 28.5550, 77.2850),
+    ("South West", 28.5732, 77.0396),
+    ("West", 28.6564, 77.0709),
 ]
 
 # Function to get live weather
@@ -125,30 +400,121 @@ def heat_alert(temp):
     else:
         return "🌤️ Normal Temperature."
 
-# Add weather markers to map
+# Add weather markers to map with enhanced styling
 for name, lat, lon in locations:
     w = get_weather(lat, lon)
     alert = heat_alert(w["temperature"])
-    popup = f"""
-<b>{name}</b><br>
-Temperature: {w['temperature']} °C<br>
-Feels Like: {w['feels_like']} °C<br>
-Humidity: {w['humidity']} %<br>
-Status: {alert}
-"""
+    
+    # Determine icon color and size based on temperature
+    if w["temperature"] >= 40:
+        icon_color = "darkred"
+        icon_prefix = "fa"
+        icon_name = "fire"
+    elif w["temperature"] >= 35:
+        icon_color = "red"
+        icon_prefix = "fa"
+        icon_name = "thermometer-three-quarters"
+    elif w["temperature"] >= 30:
+        icon_color = "orange"
+        icon_prefix = "fa"
+        icon_name = "sun"
+    elif w["temperature"] >= 25:
+        icon_color = "green"
+        icon_prefix = "fa"
+        icon_name = "cloud-sun"
+    else:
+        icon_color = "blue"
+        icon_prefix = "fa"
+        icon_name = "cloud"
+    
+    popup_html = f"""
+    <div style="font-family: Arial; width: 250px; padding: 10px; border-radius: 8px; background-color: #f0f0f0;">
+        <h4 style="margin: 0 0 10px 0; color: #333;">{name}</h4>
+        <div style="background-color: white; padding: 10px; border-radius: 5px; border-left: 4px solid {icon_color};">
+            <p style="margin: 5px 0;"><b>🌡️ Temperature:</b> {w['temperature']:.1f}°C</p>
+            <p style="margin: 5px 0;"><b>🤔 Feels Like:</b> {w['feels_like']:.1f}°C</p>
+            <p style="margin: 5px 0;"><b>💧 Humidity:</b> {w['humidity']:.0f}%</p>
+            <p style="margin: 10px 0 0 0; padding-top: 8px; border-top: 1px solid #ddd;"><b>Status:</b> {alert}</p>
+        </div>
+    </div>
+    """
+    
     folium.Marker(
         location=[lat, lon],
-        popup=popup,
-        icon=folium.Icon(color="red" if w["temperature"] >= 35 else "green"),
+        popup=folium.Popup(popup_html, max_width=300),
+        tooltip=f"{name}: {w['temperature']:.1f}°C",
+        icon=folium.Icon(
+            color=icon_color,
+            icon=icon_name,
+            prefix=icon_prefix,
+            icon_color='white'
+        ),
     ).add_to(m)
+
+# Load and plot district boundaries from shapefile
+@st.cache_data
+def load_shapefile_districts():
+    """Load Delhi district boundaries from shapefile in archive folder"""
+    try:
+        import geopandas as gpd
+        shapefile_path = "archive/DISTRICT_BOUNDARY.shp"
+        
+        if not os.path.exists(shapefile_path):
+            return None
+        
+        # Read the shapefile
+        gdf = gpd.read_file(shapefile_path)
+        
+        # Transform to lat/lon (EPSG:4326) for proper map display
+        gdf = gdf.to_crs(epsg=4326)
+        
+        # Filter to only Delhi districts
+        delhi_gdf = gdf[gdf['STATE'].str.contains('DELHI', case=False, na=False)]
+        
+        return delhi_gdf
+    except Exception as e:
+        st.error(f"Error loading shapefile: {str(e)}")
+        return None
+
+# Add district boundaries from shapefile to map
+try:
+    gdf = load_shapefile_districts()
+    if gdf is not None:
+        # Create a feature group for all districts
+        district_group = folium.FeatureGroup(name="🏘️ District Boundaries", show=True)
+        
+        # Add district boundaries as GeoJSON layer
+        for idx, row in gdf.iterrows():
+            # Convert geometry to GeoJSON
+            district_name = row.get('District', f'District {idx}')
+            if isinstance(district_name, str):
+                district_name = district_name.title()
+            
+            feature = folium.features.GeoJson(
+                data=row.geometry.__geo_interface__,
+                style_function=lambda x: {
+                    'fillColor': '#30b8d8',
+                    'color': '#0066cc',
+                    'weight': 2,
+                    'fillOpacity': 0
+                },
+                popup=f"<b>{district_name}</b><br>Area: {row['Shape_Area']/1e6:.2f} sq km",
+                tooltip=district_name
+            )
+            feature.add_to(district_group)
+        
+        district_group.add_to(m)
+except Exception as e:
+    pass
+
+# Add layer control to the map
+folium.LayerControl(position='topright', collapsed=False).add_to(m)
 
 # Render map in Streamlit
 st_folium(m, width=1500, height=600)
 
 # Time Series Analysis of MODIS LST
-st.subheader("Time Series Analysis - Historical MODIS Land Surface Temperature")
-
-# Date range selector
+st.subheader("Time Series Analysis - Historical MODIS Land Surface Temperature")# Date range selector
 col1, col2 = st.columns(2)
 with col1:
     start_date = st.date_input("Start Date", datetime.now() - timedelta(days=60))
@@ -450,6 +816,192 @@ Anomaly: {row['Temperature'] - df_spatial['Temperature'].mean():+.2f}°C
 
 except Exception as e:
     st.error(f"Error in spatial distribution analysis: {str(e)}")
+
+# Greenery Effect on Urban Heat Island Analysis
+st.subheader("Impact of Vegetation on Urban Heat Island Effect")
+
+try:
+    # Fetch NDVI data for each location
+    ndvi_values = []
+    
+    for name, lat, lon in locations:
+        try:
+            # Create point geometry
+            point = ee.Geometry.Point([lon, lat])
+            
+            # Fetch Sentinel-2 NDVI for the location
+            sentinel_collection = (
+                ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
+                .filterDate("2025-12-31", "2026-01-30")
+                .filterBounds(point.buffer(500))
+                .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 20))
+                .median()
+            )
+            
+            ndvi = sentinel_collection.normalizedDifference(['B8', 'B4'])
+            
+            # Sample NDVI value
+            ndvi_sample = ndvi.sample(point, 500).first().get('nd').getInfo()
+            
+            ndvi_values.append({
+                'City': name,
+                'NDVI': ndvi_sample if ndvi_sample else 0,
+                'Temperature': next((item['Temperature'] for item in district_temps if item['District'] == name), None)
+            })
+        except:
+            # If sampling fails, use default NDVI
+            ndvi_values.append({
+                'City': name,
+                'NDVI': 0.3,  # Default moderate vegetation
+                'Temperature': next((item['Temperature'] for item in district_temps if item['District'] == name), None)
+            })
+    
+    df_greenery = pd.DataFrame(ndvi_values)
+    
+    # Create visualizations for greenery-temperature relationship
+    col1, col2 = st.columns(2)
+    
+    # NDVI distribution chart
+    with col1:
+        fig_ndvi = go.Figure()
+        fig_ndvi.add_trace(go.Bar(
+            x=df_greenery['City'],
+            y=df_greenery['NDVI'],
+            marker=dict(
+                color=df_greenery['NDVI'],
+                colorscale='RdYlGn',
+                showscale=True,
+                colorbar=dict(title="NDVI")
+            ),
+            text=df_greenery['NDVI'].round(3),
+            textposition='outside',
+            name='NDVI'
+        ))
+        
+        fig_ndvi.update_layout(
+            title='Vegetation Index (NDVI) Distribution',
+            xaxis_title='City',
+            yaxis_title='NDVI Value',
+            height=400,
+            template='plotly_white',
+            showlegend=False
+        )
+        
+        st.plotly_chart(fig_ndvi, use_container_width=True)
+    
+    # Correlation scatter plot - NDVI vs Temperature
+    with col2:
+        fig_corr = go.Figure()
+        fig_corr.add_trace(go.Scatter(
+            x=df_greenery['NDVI'],
+            y=df_greenery['Temperature'],
+            mode='markers+text',
+            marker=dict(
+                size=15,
+                color=df_greenery['Temperature'],
+                colorscale='RdYlBu_r',
+                showscale=True,
+                colorbar=dict(title="Temp (°C)")
+            ),
+            text=df_greenery['City'],
+            textposition='top center',
+            name='Cities'
+        ))
+        
+        fig_corr.update_layout(
+            title='Vegetation vs Temperature Relationship',
+            xaxis_title='Vegetation Index (NDVI)',
+            yaxis_title='Temperature (°C)',
+            height=400,
+            template='plotly_white'
+        )
+        
+        st.plotly_chart(fig_corr, use_container_width=True)
+    
+    # Calculate correlation
+    correlation = df_greenery['NDVI'].corr(df_greenery['Temperature'])
+    
+    # Greenery Impact Analysis
+    st.subheader("Greenery Impact on UHI - Statistical Analysis")
+    
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("Correlation Coefficient", f"{correlation:.3f}",
+                 "Negative = More vegetation = Lower temp")
+    with col2:
+        avg_ndvi = df_greenery['NDVI'].mean()
+        st.metric("Avg Vegetation (NDVI)", f"{avg_ndvi:.3f}",
+                 "Range: -1 to 1")
+    with col3:
+        max_ndvi_city = df_greenery.loc[df_greenery['NDVI'].idxmax()]
+        st.metric("Greenest City", max_ndvi_city['City'],
+                 f"NDVI: {max_ndvi_city['NDVI']:.3f}")
+    with col4:
+        min_ndvi_city = df_greenery.loc[df_greenery['NDVI'].idxmin()]
+        st.metric("Least Green City", min_ndvi_city['City'],
+                 f"NDVI: {min_ndvi_city['NDVI']:.3f}")
+    
+    # Detailed analysis table
+    st.subheader("Greenery-Temperature Relationship Details")
+    
+    df_analysis = df_greenery.copy()
+    df_analysis['Temperature'] = df_analysis['Temperature'].round(2)
+    df_analysis['NDVI'] = df_analysis['NDVI'].round(4)
+    df_analysis['Temp from Mean'] = (df_analysis['Temperature'] - df_analysis['Temperature'].mean()).round(2)
+    df_analysis = df_analysis.sort_values('NDVI', ascending=False)
+    
+    st.dataframe(df_analysis, use_container_width=True)
+    
+    # Key Insights
+    st.subheader("Key Insights")
+    
+    if correlation < -0.3:
+        insight_text = f"""
+        ✅ **Strong Inverse Relationship**: There is a strong negative correlation ({correlation:.3f}) between 
+        vegetation and temperature. Cities with more vegetation tend to be cooler, indicating that greenery 
+        effectively mitigates the urban heat island effect.
+        
+        **Recommendation**: Increase green spaces (parks, trees, gardens) in areas with low vegetation 
+        to reduce local temperatures.
+        """
+    elif correlation < 0:
+        insight_text = f"""
+        ⚠️ **Moderate Inverse Relationship**: There is a moderate negative correlation ({correlation:.3f}) 
+        between vegetation and temperature. Some greenery helps cool urban areas, but other factors 
+        (building density, traffic, etc.) also play significant roles.
+        
+        **Recommendation**: Expand vegetation coverage, especially in high-temperature areas.
+        """
+    else:
+        insight_text = f"""
+        ⚠️ **Weak/Positive Relationship**: The correlation ({correlation:.3f}) suggests that vegetation 
+        alone may not be the dominant factor in temperature variations. Urban form, water bodies, 
+        and building materials also significantly influence local temperatures.
+        
+        **Recommendation**: Implement comprehensive urban cooling strategies combining vegetation, 
+        reflective surfaces, and improved urban planning.
+        """
+    
+    st.info(insight_text)
+    
+    # City-specific recommendations
+    st.subheader("City-Specific Recommendations")
+    
+    for idx, row in df_analysis.iterrows():
+        if row['NDVI'] < 0.3:
+            recommendation = f"🌳 **Priority for Greening**: {row['City']} has low vegetation ({row['NDVI']:.3f}). Urgent action needed to increase green spaces."
+            color = "red"
+        elif row['NDVI'] < 0.5:
+            recommendation = f"🌱 **Moderate Greening**: {row['City']} has moderate vegetation ({row['NDVI']:.3f}). Continue expanding green infrastructure."
+            color = "orange"
+        else:
+            recommendation = f"✅ **Well-Vegetated**: {row['City']} has good vegetation coverage ({row['NDVI']:.3f}). Maintain and expand existing green spaces."
+            color = "green"
+        
+        st.write(recommendation)
+
+except Exception as e:
+    st.error(f"Error in greenery analysis: {str(e)}")
 
 
 st.subheader("Live Heat Alerts for Delhi-NCR Region")
