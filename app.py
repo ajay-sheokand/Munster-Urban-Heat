@@ -13,16 +13,80 @@ import os
 import ee
 from google.oauth2 import service_account
 
-st.set_page_config(layout="wide")
+st.set_page_config(
+    page_title="Delhi Urban Heat Monitor",
+    page_icon="🌡️",
+    layout="wide",
+    initial_sidebar_state="collapsed",
+    menu_items={
+        'About': "Delhi Urban Heat Monitoring Dashboard - Real-time satellite and weather data analysis"
+    }
+)
 st_autorefresh(interval=300000)
 
-st.title("Delhi-NCR Urban Heat Monitoring Dashboard")
+# Add responsive CSS for mobile devices
 st.markdown("""
-This dashboard combines:
-- **Real-Time Air temperature** (OpenWeather API)
-- **Satellite-Derived Land Surface Temperature** (MODIS LST)
-Covering **Delhi + NCR Region**.
-""")
+<style>
+    /* Responsive typography */
+    @media (max-width: 768px) {
+        .stApp h1 { font-size: 1.5rem !important; }
+        .stApp h2 { font-size: 1.3rem !important; }
+        .stApp h3 { font-size: 1.1rem !important; }
+        
+        /* Make metrics stack nicely on mobile */
+        [data-testid="stMetricValue"] { font-size: 1.2rem !important; }
+        [data-testid="stMetricLabel"] { font-size: 0.9rem !important; }
+        
+        /* Adjust padding for mobile */
+        .block-container { padding: 1rem 0.5rem !important; }
+        
+        /* Make dataframes scrollable */
+        [data-testid="stDataFrame"] { overflow-x: auto !important; }
+        
+        /* Improve map display on mobile */
+        iframe { max-width: 100% !important; }
+        
+        /* Better button and input sizing */
+        .stButton > button { width: 100% !important; }
+        .stDateInput { width: 100% !important; }
+    }
+    
+    /* Tablet view adjustments */
+    @media (min-width: 769px) and (max-width: 1024px) {
+        .stApp h1 { font-size: 2rem !important; }
+        .block-container { padding: 2rem 1rem !important; }
+    }
+    
+    /* Improve chart responsiveness */
+    .js-plotly-plot { width: 100% !important; }
+    
+    /* Better spacing for all screen sizes */
+    .stPlotlyChart { margin-bottom: 1rem; }
+    .element-container { margin-bottom: 0.5rem; }
+    
+    /* Improve folium maps responsiveness */
+    .folium-map { width: 100% !important; height: auto !important; }
+    
+    /* Better column gaps on all devices */
+    [data-testid="column"] { padding: 0.25rem !important; }
+</style>
+""", unsafe_allow_html=True)
+
+st.title("Delhi-NCR Urban Heat Monitoring Dashboard")
+
+# Add info expander for better mobile experience
+with st.expander("ℹ️ About this Dashboard", expanded=False):
+    st.markdown("""
+    This dashboard combines:
+    - **Real-Time Air Temperature** - Live data from OpenWeather API for 11 Delhi districts
+    - **Satellite-Derived Land Surface Temperature (LST)** - MODIS satellite data from NASA
+    - **Vegetation Index (NDVI)** - Greenery analysis and correlation with temperature
+    - **Urban Heat Island Analysis** - Spatial heat distribution patterns
+    
+    **📱 Mobile Users:** Pinch to zoom on maps, scroll horizontally on tables for best experience.
+    
+    **🔄 Auto-refresh:** Data updates every 5 minutes automatically.
+    """)
 
 API_KEY = st.secrets["OPENWEATHER_API_KEY"]
 
@@ -160,7 +224,7 @@ st.subheader("MODIS Satellite-Derived Daily Land Surface Temperature (LST)")
 # Date selection controls for MODIS layers
 st.markdown("### 📅 Select Date Range for Satellite Data")
 
-col1, col2 = st.columns(2)
+col1, col2 = st.columns([1, 1], gap="medium")
 
 with col1:
     modis_start_date = st.date_input(
@@ -568,12 +632,14 @@ except Exception as e:
 # Add layer control to the map
 folium.LayerControl(position='topright', collapsed=False).add_to(m)
 
-# Render map in Streamlit
-st_folium(m, width=1500, height=600)
+# Render map in Streamlit - Responsive width
+st_folium(m, width=None, height=600, returned_objects=[])
 
 # Time Series Analysis of MODIS LST
-st.subheader("Time Series Analysis - Historical MODIS Land Surface Temperature")# Date range selector
-col1, col2 = st.columns(2)
+st.subheader("Time Series Analysis - Historical MODIS Land Surface Temperature")
+
+# Date range selector
+col1, col2 = st.columns([1, 1], gap="medium")
 with col1:
     start_date = st.date_input("Start Date", datetime.now() - timedelta(days=60))
 with col2:
@@ -652,7 +718,7 @@ try:
         st.plotly_chart(fig, width='stretch')
         
         # Display statistics
-        col1, col2, col3, col4 = st.columns(4)
+        col1, col2, col3, col4 = st.columns(4, gap="small")
         with col1:
             st.metric("Average LST", f"{df_ts['Mean LST (°C)'].mean():.2f}°C")
         with col2:
@@ -687,7 +753,7 @@ try:
     df_spatial = pd.DataFrame(district_temps)
     
     # Create visualizations
-    col1, col2 = st.columns(2)
+    col1, col2 = st.columns([1, 1], gap="medium")
     
     # Spatial heatmap - Bar chart showing temperature distribution
     with col1:
@@ -749,7 +815,7 @@ try:
     # Spatial statistics
     st.subheader("Spatial Temperature Statistics")
     
-    col1, col2, col3, col4, col5 = st.columns(5)
+    col1, col2, col3, col4, col5 = st.columns(5, gap="small")
     with col1:
         st.metric("Max Temp District", df_spatial.loc[df_spatial['Temperature'].idxmax(), 'District'], 
                  f"{df_spatial['Temperature'].max():.1f}°C")
@@ -818,7 +884,7 @@ Anomaly: {row['Temperature'] - df_spatial['Temperature'].mean():+.2f}°C
             opacity=0.9
         ).add_to(m_heat)
     
-    st_folium(m_heat, width=1500, height=600)
+    st_folium(m_heat, width=None, height=600, returned_objects=[])
     
     # Urban Heat Island Analysis
     st.subheader("Urban Heat Island (UHI) Analysis")
@@ -858,7 +924,7 @@ Anomaly: {row['Temperature'] - df_spatial['Temperature'].mean():+.2f}°C
     hottest_district = df_uhi.loc[df_uhi['UHI Intensity'].idxmax()]
     coolest_district = df_uhi.loc[df_uhi['UHI Intensity'].idxmin()]
     
-    col1, col2 = st.columns(2)
+    col1, col2 = st.columns([1, 1], gap="medium")
     with col1:
         st.info(f"""
         **Hottest Zone**: {hottest_district['District']}
@@ -917,7 +983,7 @@ try:
     df_greenery = pd.DataFrame(ndvi_values)
     
     # Create visualizations for greenery-temperature relationship
-    col1, col2 = st.columns(2)
+    col1, col2 = st.columns([1, 1], gap="medium")
     
     # NDVI distribution chart
     with col1:
@@ -982,7 +1048,7 @@ try:
     # Greenery Impact Analysis
     st.subheader("Greenery Impact on UHI - Statistical Analysis")
     
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col3, col4 = st.columns(4, gap="small")
     with col1:
         st.metric("Correlation Coefficient", f"{correlation:.3f}",
                  "Negative = More vegetation = Lower temp")
