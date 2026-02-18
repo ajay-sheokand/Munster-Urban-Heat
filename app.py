@@ -187,34 +187,22 @@ if modis_start_date >= modis_end_date:
 # Display selected date range
 st.info(f"📊 Loading satellite data (LST & NDVI) from **{modis_start_date}** to **{modis_end_date}** ({(modis_end_date - modis_start_date).days} days)")
 
-# Function to load Delhi districts from KML file
+# Function to load Delhi districts from GeoJSON file
 @st.cache_data
 def load_delhi_districts_from_kml():
-    """Load Delhi district boundaries from GeoJSON/KML file"""
+    """Load Delhi district boundaries from GeoJSON file"""
     try:
         import geopandas as gpd
         
         # Get absolute path (works in both local and cloud deployment)
         current_dir = os.path.dirname(os.path.abspath(__file__))
         
-        # Try GeoJSON first (more reliable in cloud deployments)
+        # Use GeoJSON format for cloud deployment compatibility
         geojson_path = os.path.join(current_dir, "delhi_admin.geojson")
-        kml_path = os.path.join(current_dir, "delhi_admin.kml")
         
-        # Prefer GeoJSON if available
         if os.path.exists(geojson_path):
             gdf = gpd.read_file(geojson_path)
             st.success(f"✅ Loaded {len(gdf)} districts from GeoJSON")
-        elif os.path.exists(kml_path):
-            # Fallback to KML if GeoJSON not available
-            import fiona
-            try:
-                fiona.drvsupport.supported_drivers['KML'] = 'rw'
-                fiona.drvsupport.supported_drivers['LIBKML'] = 'rw'
-            except:
-                pass
-            gdf = gpd.read_file(kml_path, driver='KML')
-            st.success(f"✅ Loaded {len(gdf)} districts from KML")
         else:
             st.warning(f"⚠️ District boundary files not found")
             st.info(f"📂 Current directory: {current_dir}")
