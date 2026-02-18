@@ -415,57 +415,6 @@ try:
     # Add the layer to the map
     m.add_ee_layer(display_layer, vis_params, "🌡️ Land Surface Temperature (°C)", opacity=0.6)
     
-    # Add NDVI-LST Correlation Layer
-    try:
-        modis_ndvi = (
-            ee.ImageCollection("MODIS/061/MOD13A2")
-            .filterDate(modis_start_date.isoformat(), modis_end_date.isoformat())
-            .select("NDVI")
-            .mean()
-        )
-        ndvi = modis_ndvi.divide(10000)
-        
-        # Compute correlation using local neighborhood statistics
-        ndvi_mean = ndvi.reduceNeighborhood(ee.Reducer.mean(), ee.Kernel.square(3))
-        lst_mean = lst_celsius.reduceNeighborhood(ee.Reducer.mean(), ee.Kernel.square(3))
-        
-        ndvi_diff = ndvi.subtract(ndvi_mean)
-        lst_diff = lst_celsius.subtract(lst_mean)
-        
-        covariance = ndvi_diff.multiply(lst_diff).reduceNeighborhood(ee.Reducer.mean(), ee.Kernel.square(3))
-        ndvi_std = ndvi.reduceNeighborhood(ee.Reducer.stdDev(), ee.Kernel.square(3))
-        lst_std = lst_celsius.reduceNeighborhood(ee.Reducer.stdDev(), ee.Kernel.square(3))
-        
-        # Calculate Pearson correlation
-        correlation = covariance.divide(ndvi_std.multiply(lst_std))
-        
-        # Clip to Delhi region for all districts
-        if districts_geometry:
-            correlation_clipped = correlation.clip(districts_geometry)
-        else:
-            correlation_clipped = correlation.clip(region)
-        
-        # Visualization parameters for correlation with enhanced color palette
-        corr_vis_params = {
-            'min': -1,
-            'max': 1,
-            'palette': [
-                '#2c0735',  # Deep purple - Strong negative
-                '#5D1C97',  # Purple - Negative
-                '#1F77B4',  # Blue - Negative
-                '#17BECF',  # Cyan - Weak negative
-                '#E8E8E8',  # Light gray - Neutral
-                '#FFEB3B',  # Bright yellow - Weak positive
-                '#FF9800',  # Orange - Positive
-                '#E74C3C',  # Red - Strong positive
-                '#8B0000',  # Dark red - Very strong positive
-            ]
-        }
-        
-        m.add_ee_layer(correlation_clipped, corr_vis_params, "📊 NDVI-LST Correlation", opacity=0.5)
-        
-    except Exception as corr_error:
-        st.warning(f"Could not load correlation layer: {str(corr_error)}")
 except Exception as lst_error:
     st.error(f"Error loading LST layer: {str(lst_error)}")
 
@@ -1256,92 +1205,286 @@ try:
         )
         
         st.plotly_chart(fig_corr, width='stretch')
-    
-    # Calculate correlation
-    correlation = df_greenery['NDVI'].corr(df_greenery['Temperature'])
-    
-    # Greenery Impact Analysis
-    st.subheader("Greenery Impact on UHI - Statistical Analysis")
-    
-    col1, col2, col3, col4 = st.columns(4, gap="small")
-    with col1:
-        st.metric("Correlation Coefficient", f"{correlation:.3f}",
-                 "Negative = More vegetation = Lower temp")
-    with col2:
-        avg_ndvi = df_greenery['NDVI'].mean()
-        st.metric("Avg Vegetation (NDVI)", f"{avg_ndvi:.3f}",
-                 "Range: -1 to 1")
-    with col3:
-        max_ndvi_city = df_greenery.loc[df_greenery['NDVI'].idxmax()]
-        st.metric("Greenest City", max_ndvi_city['City'],
-                 f"NDVI: {max_ndvi_city['NDVI']:.3f}")
-    with col4:
-        min_ndvi_city = df_greenery.loc[df_greenery['NDVI'].idxmin()]
-        st.metric("Least Green City", min_ndvi_city['City'],
-                 f"NDVI: {min_ndvi_city['NDVI']:.3f}")
-    
-    # Detailed analysis table
-    st.subheader("Greenery-Temperature Relationship Details")
-    
-    df_analysis = df_greenery.copy()
-    df_analysis['Temperature'] = df_analysis['Temperature'].round(2)
-    df_analysis['NDVI'] = df_analysis['NDVI'].round(4)
-    df_analysis['Temp from Mean'] = (df_analysis['Temperature'] - df_analysis['Temperature'].mean()).round(2)
-    df_analysis = df_analysis.sort_values('NDVI', ascending=False)
-    
-    st.dataframe(df_analysis, width='stretch')
-    
-    # Key Insights
-    st.subheader("Key Insights")
-    
-    if correlation < -0.3:
-        insight_text = f"""
-        ✅ **Strong Inverse Relationship**: There is a strong negative correlation ({correlation:.3f}) between 
-        vegetation and temperature. Cities with more vegetation tend to be cooler, indicating that greenery 
-        effectively mitigates the urban heat island effect.
-        
-        **Recommendation**: Increase green spaces (parks, trees, gardens) in areas with low vegetation 
-        to reduce local temperatures.
-        """
-    elif correlation < 0:
-        insight_text = f"""
-        ⚠️ **Moderate Inverse Relationship**: There is a moderate negative correlation ({correlation:.3f}) 
-        between vegetation and temperature. Some greenery helps cool urban areas, but other factors 
-        (building density, traffic, etc.) also play significant roles.
-        
-        **Recommendation**: Expand vegetation coverage, especially in high-temperature areas.
-        """
-    else:
-        insight_text = f"""
-        ⚠️ **Weak/Positive Relationship**: The correlation ({correlation:.3f}) suggests that vegetation 
-        alone may not be the dominant factor in temperature variations. Urban form, water bodies, 
-        and building materials also significantly influence local temperatures.
-        
-        **Recommendation**: Implement comprehensive urban cooling strategies combining vegetation, 
-        reflective surfaces, and improved urban planning.
-        """
-    
-    st.info(insight_text)
-    
-    # City-specific recommendations
-    st.subheader("City-Specific Recommendations")
-    
-    for idx, row in df_analysis.iterrows():
-        if row['NDVI'] < 0.3:
-            recommendation = f"🌳 **Priority for Greening**: {row['City']} has low vegetation ({row['NDVI']:.3f}). Urgent action needed to increase green spaces."
-            color = "red"
-        elif row['NDVI'] < 0.5:
-            recommendation = f"🌱 **Moderate Greening**: {row['City']} has moderate vegetation ({row['NDVI']:.3f}). Continue expanding green infrastructure."
-            color = "orange"
-        else:
-            recommendation = f"✅ **Well-Vegetated**: {row['City']} has good vegetation coverage ({row['NDVI']:.3f}). Maintain and expand existing green spaces."
-            color = "green"
-        
-        st.write(recommendation)
 
 except Exception as e:
     st.error(f"Error in greenery analysis: {str(e)}")
 
+# ==================== Multi-Variable Correlation Analysis ====================
+st.header("📊 Multi-Variable Correlation Analysis: NDVI, LST & Land Use")
+st.markdown("""
+Analyze the relationships between vegetation (NDVI), land surface temperature (LST), 
+and land use/land cover (LULC) to understand urban heat dynamics.
+""")
+
+try:
+    # Sample data from Delhi districts using Earth Engine
+    import pandas as pd
+    import numpy as np
+    
+    # Create sample points across Delhi
+    if districts_geometry:
+        sampling_geometry = districts_geometry
+    else:
+        sampling_geometry = region
+    
+    # Get LST data
+    lst_image = (
+        ee.ImageCollection("MODIS/061/MOD11A1")
+        .filterDate(modis_start_date.isoformat(), modis_end_date.isoformat())
+        .select("LST_Day_1km")
+        .mean()
+    )
+    lst_celsius_sample = lst_image.multiply(0.02).subtract(273.15)
+    
+    # Get NDVI data
+    ndvi_image = (
+        ee.ImageCollection("MODIS/061/MOD13A2")
+        .filterDate(modis_start_date.isoformat(), modis_end_date.isoformat())
+        .select("NDVI")
+        .mean()
+    ).divide(10000)
+    
+    # Get Land Cover data
+    lulc_image = ee.ImageCollection("ESA/WorldCover/v200").first()
+    
+    # Combine all bands
+    combined_image = lst_celsius_sample.addBands(ndvi_image).addBands(lulc_image)
+    combined_image = combined_image.select(['LST_Day_1km', 'NDVI', 'Map'], ['LST', 'NDVI', 'LandCover'])
+    
+    # Sample random points
+    with st.spinner("Sampling data across Delhi districts..."):
+        sample_points = combined_image.sample(
+            region=sampling_geometry,
+            scale=500,  # 500m resolution
+            numPixels=500,  # Sample 500 points
+            seed=42,
+            geometries=True
+        )
+        
+        # Get the data
+        sample_data = sample_points.getInfo()
+        
+        if sample_data and 'features' in sample_data and len(sample_data['features']) > 0:
+            # Extract data into DataFrame
+            data_list = []
+            for feature in sample_data['features']:
+                props = feature['properties']
+                if 'LST' in props and 'NDVI' in props and 'LandCover' in props:
+                    data_list.append({
+                        'LST': props['LST'],
+                        'NDVI': props['NDVI'],
+                        'LandCover': props['LandCover']
+                    })
+            
+            df_corr = pd.DataFrame(data_list)
+            
+            # Filter out invalid values
+            df_corr = df_corr[(df_corr['LST'] > -50) & (df_corr['LST'] < 60)]  # Reasonable temperature range
+            df_corr = df_corr[(df_corr['NDVI'] >= -1) & (df_corr['NDVI'] <= 1)]  # Valid NDVI range
+            
+            # Map land cover codes to names
+            lulc_names = {
+                10: 'Tree Cover', 20: 'Shrubland', 30: 'Grassland', 40: 'Cropland',
+                50: 'Built-up', 60: 'Bare/Sparse', 70: 'Snow/Ice', 80: 'Water',
+                90: 'Wetland', 95: 'Mangroves', 100: 'Moss/Lichen'
+            }
+            df_corr['LandCover_Name'] = df_corr['LandCover'].map(lulc_names).fillna('Other')
+            
+            if len(df_corr) > 10:  # Need sufficient data points
+                st.success(f"✅ Sampled {len(df_corr)} points across Delhi districts")
+                
+                # Calculate correlations
+                corr_ndvi_lst = df_corr['NDVI'].corr(df_corr['LST'])
+                
+                # Display key metrics
+                st.subheader("Correlation Statistics")
+                col1, col2, col3, col4 = st.columns(4, gap="small")
+                
+                with col1:
+                    st.metric(
+                        "NDVI-LST Correlation",
+                        f"{corr_ndvi_lst:.3f}",
+                        "Negative = vegetation cools"
+                    )
+                
+                with col2:
+                    urban_temp = df_corr[df_corr['LandCover'] == 50]['LST'].mean() if 50 in df_corr['LandCover'].values else 0
+                    st.metric(
+                        "Avg Urban Temperature",
+                        f"{urban_temp:.1f}°C" if urban_temp > 0 else "N/A",
+                        "Built-up areas"
+                    )
+                
+                with col3:
+                    veg_temp = df_corr[df_corr['LandCover'].isin([10, 20, 30])]['LST'].mean() if any(lc in df_corr['LandCover'].values for lc in [10, 20, 30]) else 0
+                    st.metric(
+                        "Avg Vegetation Temperature",
+                        f"{veg_temp:.1f}°C" if veg_temp > 0 else "N/A",
+                        "Green areas"
+                    )
+                
+                with col4:
+                    if urban_temp > 0 and veg_temp > 0:
+                        temp_diff = urban_temp - veg_temp
+                        st.metric(
+                            "Urban Heat Island Effect",
+                            f"{temp_diff:.1f}°C",
+                            "Urban vs Vegetation"
+                        )
+                    else:
+                        st.metric("Urban Heat Island Effect", "N/A", "Insufficient data")
+                
+                # Visualizations
+                st.subheader("Correlation Visualizations")
+                
+                col1, col2 = st.columns([1, 1], gap="medium")
+                
+                # NDVI vs LST scatter plot
+                with col1:
+                    fig_scatter = go.Figure()
+                    
+                    # Color by land cover
+                    for lc_code, lc_name in lulc_names.items():
+                        df_lc = df_corr[df_corr['LandCover'] == lc_code]
+                        if len(df_lc) > 0:
+                            fig_scatter.add_trace(go.Scatter(
+                                x=df_lc['NDVI'],
+                                y=df_lc['LST'],
+                                mode='markers',
+                                name=lc_name,
+                                marker=dict(size=8, opacity=0.6)
+                            ))
+                    
+                    # Add trend line
+                    z = np.polyfit(df_corr['NDVI'], df_corr['LST'], 1)
+                    p = np.poly1d(z)
+                    x_trend = np.linspace(df_corr['NDVI'].min(), df_corr['NDVI'].max(), 100)
+                    
+                    fig_scatter.add_trace(go.Scatter(
+                        x=x_trend,
+                        y=p(x_trend),
+                        mode='lines',
+                        name='Trend Line',
+                        line=dict(color='black', width=2, dash='dash')
+                    ))
+                    
+                    fig_scatter.update_layout(
+                        title=f'NDVI vs LST (Correlation: {corr_ndvi_lst:.3f})',
+                        xaxis_title='Vegetation Index (NDVI)',
+                        yaxis_title='Land Surface Temperature (°C)',
+                        height=450,
+                        template='plotly_white',
+                        showlegend=True
+                    )
+                    
+                    st.plotly_chart(fig_scatter, width='stretch')
+                
+                # Temperature by Land Cover boxplot
+                with col2:
+                    fig_box = go.Figure()
+                    
+                    for lc_code, lc_name in lulc_names.items():
+                        df_lc = df_corr[df_corr['LandCover'] == lc_code]
+                        if len(df_lc) > 0:
+                            fig_box.add_trace(go.Box(
+                                y=df_lc['LST'],
+                                name=lc_name,
+                                boxmean='sd'
+                            ))
+                    
+                    fig_box.update_layout(
+                        title='Temperature Distribution by Land Use Type',
+                        yaxis_title='Land Surface Temperature (°C)',
+                        height=450,
+                        template='plotly_white',
+                        showlegend=False
+                    )
+                    
+                    st.plotly_chart(fig_box, width='stretch')
+                
+                # Land cover statistics table
+                st.subheader("Temperature Statistics by Land Use Type")
+                
+                lulc_stats = df_corr.groupby('LandCover_Name')['LST'].agg([
+                    ('Count', 'count'),
+                    ('Mean Temp (°C)', 'mean'),
+                    ('Std Dev', 'std'),
+                    ('Min Temp (°C)', 'min'),
+                    ('Max Temp (°C)', 'max')
+                ]).round(2)
+                
+                lulc_stats = lulc_stats.sort_values('Mean Temp (°C)', ascending=False)
+                st.dataframe(lulc_stats, width='stretch')
+                
+                # Key Insights
+                st.subheader("🔍 Key Insights")
+                
+                insights = []
+                
+                # NDVI-LST correlation insight
+                if corr_ndvi_lst < -0.3:
+                    insights.append(
+                        "✅ **Strong Cooling Effect of Vegetation**: Strong negative correlation between NDVI and LST "
+                        f"({corr_ndvi_lst:.3f}) confirms that vegetation significantly reduces surface temperatures."
+                    )
+                elif corr_ndvi_lst < -0.1:
+                    insights.append(
+                        "⚠️ **Moderate Cooling Effect**: Moderate negative correlation "
+                        f"({corr_ndvi_lst:.3f}) shows vegetation provides some cooling, but other factors also matter."
+                    )
+                
+                # Urban heat island insight
+                if urban_temp > 0 and veg_temp > 0 and (urban_temp - veg_temp) > 2:
+                    insights.append(
+                        f"🔥 **Significant Urban Heat Island**: Built-up areas are {(urban_temp - veg_temp):.1f}°C hotter "
+                        f"than vegetated areas on average, highlighting the need for urban greening strategies."
+                    )
+                
+                # Hottest land cover
+                if len(lulc_stats) > 0:
+                    hottest_lc = lulc_stats.index[0]
+                    hottest_temp = lulc_stats.iloc[0]['Mean Temp (°C)']
+                    insights.append(
+                        f"🌡️ **Hottest Land Cover Type**: {hottest_lc} areas show the highest average temperature "
+                        f"({hottest_temp:.1f}°C), indicating priority zones for cooling interventions."
+                    )
+                
+                # Coolest land cover
+                if len(lulc_stats) > 1:
+                    coolest_lc = lulc_stats.index[-1]
+                    coolest_temp = lulc_stats.iloc[-1]['Mean Temp (°C)']
+                    insights.append(
+                        f"❄️ **Coolest Land Cover Type**: {coolest_lc} areas maintain the lowest temperatures "
+                        f"({coolest_temp:.1f}°C), demonstrating effective natural cooling."
+                    )
+                
+                for insight in insights:
+                    st.info(insight)
+                
+                # Recommendations
+                st.subheader("💡 Recommendations")
+                
+                recommendations = [
+                    "🌳 **Increase Urban Vegetation**: Target built-up areas with low NDVI for tree planting and green space development.",
+                    "🏙️ **Smart Urban Planning**: Design new developments with adequate green spaces to mitigate heat buildup.",
+                    "💧 **Expand Water Bodies**: Consider adding water features in hot zones for localized cooling effects.",
+                    "🌿 **Green Roofs & Walls**: Implement vegetation on buildings in dense urban areas where ground space is limited.",
+                    "📊 **Continuous Monitoring**: Regular satellite monitoring to track vegetation health and temperature trends."
+                ]
+                
+                for rec in recommendations:
+                    st.markdown(f"- {rec}")
+                
+            else:
+                st.warning("Insufficient data points for correlation analysis. Try adjusting the date range.")
+        else:
+            st.warning("No data available for correlation analysis. Check your date range and area selection.")
+            
+except Exception as corr_error:
+    st.error(f"Error in correlation analysis: {str(corr_error)}")
+    st.info("This analysis requires Earth Engine data. Make sure your date range has available data.")
+
+# ==================== End of Correlation Analysis ====================
 
 st.subheader("Live Heat Alerts for Delhi-NCR Region")
 for name, lat, lon in locations:
