@@ -10,3 +10,4 @@ google-auth
 setuptools>=70.0.0
 geopandas
 shapely
+fiona

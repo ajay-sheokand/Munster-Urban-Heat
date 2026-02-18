@@ -157,34 +157,78 @@ def load_district_boundaries():
 
 st.subheader("MODIS Satellite-Derived Daily Land Surface Temperature (LST)")
 
-# Function to create merged district geometry from shapefile
+# Function to load Delhi districts from KML file
 @st.cache_data
-def get_districts_ee_geometry():
-    """Get merged EE geometry from shapefile districts"""
+def load_delhi_districts_from_kml():
+    """Load Delhi district boundaries from KML file"""
     try:
         import geopandas as gpd
-        shapefile_path = "archive/DISTRICT_BOUNDARY.shp"
+        import fiona
+        kml_path = "delhi_admin.kml"
         
-        if not os.path.exists(shapefile_path):
+        if not os.path.exists(kml_path):
+            st.warning(f"KML file not found: {kml_path}")
             return None
         
-        gdf = gpd.read_file(shapefile_path)
-        gdf = gdf.to_crs(epsg=4326)
-        delhi_gdf = gdf[gdf['STATE'].str.contains('DELHI', case=False, na=False)]
+        # Enable KML driver support in fiona
+        fiona.drvsupport.supported_drivers['KML'] = 'rw'
+        fiona.drvsupport.supported_drivers['LIBKML'] = 'rw'
         
-        if delhi_gdf.empty:
-            return None
+        # Read the KML file
+        gdf = gpd.read_file(kml_path, driver='KML')
         
-        # Merge all district geometries
+        # Filter for Delhi districts only (should already be all Delhi from this file)
+        if 'STATE' in gdf.columns:
+            delhi_gdf = gdf[gdf['STATE'].str.contains('DELHI', case=False, na=False)]
+        else:
+            delhi_gdf = gdf
+        
+        return delhi_gdf
+    except Exception as e:
+        st.error(f"Error loading KML file: {str(e)}")
+        return None
+
+# Function to create merged district geometry from KML for Earth Engine
+def get_districts_ee_geometry():
+    """Get merged EE geometry for Delhi from KML file"""
+    try:
+        delhi_gdf = load_delhi_districts_from_kml()
+        
+        if delhi_gdf is None or delhi_gdf.empty:
+            # Fallback to bounding box if KML loading fails
+            return ee.Geometry.Rectangle([76.8388, 28.4044, 77.3465, 28.8833])
+        
+        # Merge all district geometries and fix any invalid geometries
         merged_geom = delhi_gdf.unary_union
         
-        # Convert to Earth Engine geometry
-        coords = list(merged_geom.exterior.coords)
-        ee_geom = ee.Geometry.Polygon([coords])
+        # Validate and fix geometry if needed
+        if not merged_geom.is_valid:
+            from shapely.validation import make_valid
+            merged_geom = make_valid(merged_geom)
+        
+        # Simplify the geometry to reduce complexity
+        merged_geom = merged_geom.simplify(0.001, preserve_topology=True)
+        
+        # Convert to Earth Engine geometry based on type
+        if merged_geom.geom_type == 'Polygon':
+            # Extract coordinates as list of [lon, lat] pairs (ignore z if present)
+            coords = [[coord[0], coord[1]] for coord in merged_geom.exterior.coords]
+            ee_geom = ee.Geometry.Polygon([coords])
+        elif merged_geom.geom_type == 'MultiPolygon':
+            # Extract coordinates for each polygon
+            polygons = []
+            for poly in merged_geom.geoms:
+                coords = [[coord[0], coord[1]] for coord in poly.exterior.coords]
+                polygons.append([coords])  # Each polygon needs to be wrapped in a list
+            ee_geom = ee.Geometry.MultiPolygon(polygons)
+        else:
+            return ee.Geometry.Rectangle([76.8388, 28.4044, 77.3465, 28.8833])
         
         return ee_geom
     except Exception as e:
-        return None
+        st.warning(f"Using bounding box for clipping: {str(e)}")
+        # Fallback to bounding box
+        return ee.Geometry.Rectangle([76.8388, 28.4044, 77.3465, 28.8833])
 
 # Get district geometry for clipping
 districts_geometry = get_districts_ee_geometry()
@@ -451,60 +495,39 @@ for name, lat, lon in locations:
         ),
     ).add_to(m)
 
-# Load and plot district boundaries from shapefile
-@st.cache_data
-def load_shapefile_districts():
-    """Load Delhi district boundaries from shapefile in archive folder"""
-    try:
-        import geopandas as gpd
-        shapefile_path = "archive/DISTRICT_BOUNDARY.shp"
-        
-        if not os.path.exists(shapefile_path):
-            return None
-        
-        # Read the shapefile
-        gdf = gpd.read_file(shapefile_path)
-        
-        # Transform to lat/lon (EPSG:4326) for proper map display
-        gdf = gdf.to_crs(epsg=4326)
-        
-        # Filter to only Delhi districts
-        delhi_gdf = gdf[gdf['STATE'].str.contains('DELHI', case=False, na=False)]
-        
-        return delhi_gdf
-    except Exception as e:
-        st.error(f"Error loading shapefile: {str(e)}")
-        return None
-
-# Add district boundaries from shapefile to map
+# Add district boundaries from KML to map
 try:
-    gdf = load_shapefile_districts()
-    if gdf is not None:
-        # Create a feature group for all districts
+    delhi_gdf = load_delhi_districts_from_kml()
+    
+    if delhi_gdf is not None and not delhi_gdf.empty:
+        # Create a feature group for district boundaries
         district_group = folium.FeatureGroup(name="🏘️ District Boundaries", show=True)
         
-        # Add district boundaries as GeoJSON layer
-        for idx, row in gdf.iterrows():
-            # Convert geometry to GeoJSON
-            district_name = row.get('District', f'District {idx}')
+        # Add each district boundary
+        for idx, row in delhi_gdf.iterrows():
+            # Get district name from the District field or Name field
+            district_name = row.get('District', row.get('Name', 'Unknown'))
             if isinstance(district_name, str):
                 district_name = district_name.title()
             
-            feature = folium.features.GeoJson(
-                data=row.geometry.__geo_interface__,
+            # Add district boundary as GeoJSON
+            folium.GeoJson(
+                row.geometry,
+                name=district_name,
                 style_function=lambda x: {
-                    'fillColor': '#30b8d8',
+                    'fillColor': 'transparent',
                     'color': '#0066cc',
                     'weight': 2,
                     'fillOpacity': 0
                 },
-                popup=f"<b>{district_name}</b><br>Area: {row['Shape_Area']/1e6:.2f} sq km",
                 tooltip=district_name
-            )
-            feature.add_to(district_group)
+            ).add_to(district_group)
         
         district_group.add_to(m)
+    else:
+        st.warning("Could not load district boundaries from KML file")
 except Exception as e:
+    st.warning(f"Could not load district boundaries: {str(e)}")
     pass
 
 # Add layer control to the map
