@@ -157,25 +157,69 @@ def load_district_boundaries():
 
 st.subheader("MODIS Satellite-Derived Daily Land Surface Temperature (LST)")
 
+# Date selection controls for MODIS layers
+st.markdown("### 📅 Select Date Range for Satellite Data")
+
+col1, col2 = st.columns(2)
+
+with col1:
+    modis_start_date = st.date_input(
+        "Start Date",
+        value=datetime(2025, 12, 31).date(),
+        min_value=datetime(2000, 1, 1).date(),
+        max_value=datetime.now().date(),
+        key="modis_start"
+    )
+
+with col2:
+    modis_end_date = st.date_input(
+        "End Date",
+        value=datetime(2026, 1, 30).date(),
+        min_value=datetime(2000, 1, 1).date(),
+        max_value=datetime.now().date(),
+        key="modis_end"
+    )
+
+# Validate date ranges
+if modis_start_date >= modis_end_date:
+    st.error("⚠️ Start Date must be before End Date")
+
+# Display selected date range
+st.info(f"📊 Loading satellite data (LST & NDVI) from **{modis_start_date}** to **{modis_end_date}** ({(modis_end_date - modis_start_date).days} days)")
+
 # Function to load Delhi districts from KML file
 @st.cache_data
 def load_delhi_districts_from_kml():
-    """Load Delhi district boundaries from KML file"""
+    """Load Delhi district boundaries from GeoJSON/KML file"""
     try:
         import geopandas as gpd
-        import fiona
-        kml_path = "delhi_admin.kml"
         
-        if not os.path.exists(kml_path):
-            st.warning(f"KML file not found: {kml_path}")
+        # Get absolute path (works in both local and cloud deployment)
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        
+        # Try GeoJSON first (more reliable in cloud deployments)
+        geojson_path = os.path.join(current_dir, "delhi_admin.geojson")
+        kml_path = os.path.join(current_dir, "delhi_admin.kml")
+        
+        # Prefer GeoJSON if available
+        if os.path.exists(geojson_path):
+            gdf = gpd.read_file(geojson_path)
+            st.success(f"✅ Loaded {len(gdf)} districts from GeoJSON")
+        elif os.path.exists(kml_path):
+            # Fallback to KML if GeoJSON not available
+            import fiona
+            try:
+                fiona.drvsupport.supported_drivers['KML'] = 'rw'
+                fiona.drvsupport.supported_drivers['LIBKML'] = 'rw'
+            except:
+                pass
+            gdf = gpd.read_file(kml_path, driver='KML')
+            st.success(f"✅ Loaded {len(gdf)} districts from KML")
+        else:
+            st.warning(f"⚠️ District boundary files not found")
+            st.info(f"📂 Current directory: {current_dir}")
+            st.info(f"📁 Available files: {[f for f in os.listdir(current_dir) if not f.startswith('.')][:10]}")
             return None
-        
-        # Enable KML driver support in fiona
-        fiona.drvsupport.supported_drivers['KML'] = 'rw'
-        fiona.drvsupport.supported_drivers['LIBKML'] = 'rw'
-        
-        # Read the KML file
-        gdf = gpd.read_file(kml_path, driver='KML')
         
         # Filter for Delhi districts only (should already be all Delhi from this file)
         if 'STATE' in gdf.columns:
@@ -185,7 +229,10 @@ def load_delhi_districts_from_kml():
         
         return delhi_gdf
     except Exception as e:
-        st.error(f"Error loading KML file: {str(e)}")
+        st.error(f"❌ Error loading district boundaries: {str(e)}")
+        st.info("💡 Tip: Ensure delhi_admin.geojson is in the repository and deployed")
+        import traceback
+        st.code(traceback.format_exc())
         return None
 
 # Function to create merged district geometry from KML for Earth Engine
@@ -272,7 +319,7 @@ try:
     # Fetch MODIS LST
     lst = (
         ee.ImageCollection("MODIS/061/MOD11A1")
-        .filterDate("2025-12-31", "2026-01-30")
+        .filterDate(modis_start_date.isoformat(), modis_end_date.isoformat())
         .select("LST_Day_1km")
         .mean()
     )
@@ -291,7 +338,7 @@ try:
     try:
         modis_ndvi = (
             ee.ImageCollection("MODIS/061/MOD13A2")
-            .filterDate("2025-09-01", "2026-02-14")
+            .filterDate(modis_start_date.isoformat(), modis_end_date.isoformat())
             .select("NDVI")
             .mean()
         )
@@ -346,7 +393,7 @@ try:
     # Use MODIS NDVI which is more reliable and always available
     modis_ndvi = (
         ee.ImageCollection("MODIS/061/MOD13A2")  # MODIS Vegetation Indices
-        .filterDate("2025-09-01", "2026-02-14")  # Larger date range
+        .filterDate(modis_start_date.isoformat(), modis_end_date.isoformat())
         .select("NDVI")
         .mean()
     )
@@ -381,7 +428,7 @@ except Exception as ndvi_error:
         # Fallback to Sentinel-2 with very lenient filtering
         sentinel_collection = (
             ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
-            .filterDate("2025-01-01", "2026-02-14")
+            .filterDate(modis_start_date.isoformat(), modis_end_date.isoformat())
             .filterBounds(districts_geometry if districts_geometry else region)
             .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 50))  # Very lenient
             .sort('CLOUDY_PIXEL_PERCENTAGE')
@@ -855,7 +902,7 @@ try:
             # Fetch Sentinel-2 NDVI for the location
             sentinel_collection = (
                 ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
-                .filterDate("2025-12-31", "2026-01-30")
+                .filterDate(modis_start_date.isoformat(), modis_end_date.isoformat())
                 .filterBounds(point.buffer(500))
                 .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 20))
                 .median()
